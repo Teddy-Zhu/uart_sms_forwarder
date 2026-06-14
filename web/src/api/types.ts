@@ -52,6 +52,28 @@ export interface MobileInfo {
     rsrq: number;
     number: number;
     uptime: number;              // 开机时长 (毫秒)
+    cellular_ready: boolean;     // 蜂窝数据链路是否就绪
+    local_ip: string;            // 蜂窝网卡本地 IP
+}
+
+export interface PingResult {
+    type: string;
+    action: string;
+    request_id: string;
+    host: string;
+    success: boolean;
+    result: string;
+    timestamp: number;
+    adapter?: number;
+    local_ip?: string;
+    time_ms?: number;
+    dst?: string;
+    ttl?: number;
+    ping_adapter?: number;
+    msg?: string;
+    cellular_restored?: boolean;
+    cellular_enabled?: boolean;
+    restore_cellular_enabled?: boolean;
 }
 
 // 设备状态响应（来自 Lua 脚本的 status_response）
@@ -60,6 +82,7 @@ export interface DeviceStatus {
     timestamp: number;           // 时间戳
     mem_kb: number;              // 内存使用 (KB)
     flymode: boolean;            // 飞行模式是否启用
+    cellular_enabled: boolean;   // 蜂窝数据链路是否就绪
     mobile: MobileInfo;          // 移动网络信息
     port_name: string;           // 串口名称
     connected: boolean;          // 串口连接状态

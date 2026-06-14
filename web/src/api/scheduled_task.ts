@@ -2,14 +2,19 @@
 import apiClient from "@/api/client.ts";
 
 export type LastRunStatus = 'unknown' | 'success' | 'failed';
+export type ScheduledTaskType = 'sms' | 'serial';
+export type ScheduledSerialAction = 'set_flymode' | 'set_cellular' | 'ping_once' | 'reboot_mcu';
 
 export interface ScheduledTask {
     id: string;
     name: string;
     enabled: boolean;
     intervalDays: number;
+    taskType?: ScheduledTaskType;
     phoneNumber: string;
     content: string;
+    serialAction?: ScheduledSerialAction;
+    serialEnabled?: boolean | null;
     createdAt?: number;
     lastRunAt?: number;
     lastMsgId?: string;

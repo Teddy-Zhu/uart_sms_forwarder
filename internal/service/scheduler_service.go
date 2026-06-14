@@ -63,6 +63,7 @@ func (s *SchedulerService) Create(ctx context.Context, task *models.ScheduledTas
 	task.ID = uuid.New().String()
 	task.CreatedAt = now
 	task.UpdatedAt = now
+	s.normalizeTask(task)
 	return s.repo.Create(ctx, task)
 }
 
@@ -75,8 +76,12 @@ func (s *SchedulerService) Update(ctx context.Context, task *models.ScheduledTas
 	existingTask.Name = task.Name
 	existingTask.Enabled = task.Enabled
 	existingTask.IntervalDays = task.IntervalDays
+	existingTask.TaskType = task.TaskType
 	existingTask.PhoneNumber = task.PhoneNumber
 	existingTask.Content = task.Content
+	existingTask.SerialAction = task.SerialAction
+	existingTask.SerialEnabled = task.SerialEnabled
+	s.normalizeTask(existingTask)
 
 	return s.repo.Save(ctx, existingTask)
 }
@@ -180,12 +185,23 @@ func (s *SchedulerService) shouldExecuteTask(task models.ScheduledTask, now time
 
 // executeTask 执行任务
 func (s *SchedulerService) executeTask(task models.ScheduledTask) error {
+	s.normalizeTask(&task)
+
 	s.logger.Info("执行定时任务",
 		zap.String("id", task.ID),
 		zap.String("name", task.Name),
+		zap.String("type", string(task.TaskType)),
 		zap.String("phone", task.PhoneNumber),
 		zap.String("content", task.Content))
 
+	if task.TaskType == models.ScheduledTaskTypeSerial {
+		return s.executeSerialTask(task)
+	}
+
+	return s.executeSMSTask(task)
+}
+
+func (s *SchedulerService) executeSMSTask(task models.ScheduledTask) error {
 	ctx := context.Background()
 
 	flyMode := s.serialService.FlyMode()
@@ -233,6 +249,61 @@ func (s *SchedulerService) executeTask(task models.ScheduledTask) error {
 	}
 
 	return nil
+}
+
+func (s *SchedulerService) executeSerialTask(task models.ScheduledTask) error {
+	ctx := context.Background()
+	var err error
+
+	switch task.SerialAction {
+	case models.ScheduledSerialActionSetFlymode:
+		if task.SerialEnabled == nil {
+			err = fmt.Errorf("飞行模式任务缺少开关值")
+			break
+		}
+		err = s.serialService.SetFlymodeAndWait(*task.SerialEnabled)
+	case models.ScheduledSerialActionSetCellular:
+		if task.SerialEnabled == nil {
+			err = fmt.Errorf("蜂窝网络任务缺少开关值")
+			break
+		}
+		err = s.serialService.SetCellularAndWait(*task.SerialEnabled)
+	case models.ScheduledSerialActionPingOnce:
+		var result map[string]interface{}
+		result, err = s.serialService.PingOnce()
+		if err == nil {
+			if success, ok := result["success"].(bool); !ok || !success {
+				err = fmt.Errorf("Ping 失败: %v", result["result"])
+			}
+		}
+	case models.ScheduledSerialActionRebootMcu:
+		err = s.serialService.RebootMcu()
+	default:
+		err = fmt.Errorf("不支持的串口动作: %s", task.SerialAction)
+	}
+
+	if err != nil {
+		_ = s.UpdateLastRun(ctx, task.ID, "", models.LastRunStatusFailed)
+		return err
+	}
+
+	_ = s.UpdateLastRun(ctx, task.ID, "", models.LastRunStatusSuccess)
+	return nil
+}
+
+func (s *SchedulerService) normalizeTask(task *models.ScheduledTask) {
+	if task.TaskType == "" {
+		task.TaskType = models.ScheduledTaskTypeSMS
+	}
+
+	if task.TaskType == models.ScheduledTaskTypeSMS {
+		task.SerialAction = ""
+		task.SerialEnabled = nil
+		return
+	}
+
+	task.PhoneNumber = ""
+	task.Content = ""
 }
 
 func (s *SchedulerService) UpdateLastRun(ctx context.Context, id, msgId string, status models.LastRunStatus) error {

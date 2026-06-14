@@ -1,5 +1,5 @@
 import apiClient from './client';
-import type { SendSMSRequest } from './types';
+import type { PingResult, SendSMSRequest } from './types';
 
 // 发送短信
 export const sendSMS = (data: SendSMSRequest) => {
@@ -16,8 +16,17 @@ export const setFlymode = (enabled: boolean) => {
   return apiClient.post('/serial/flymode', { enabled });
 };
 
+// 设置蜂窝网络
+export const setCellular = (enabled: boolean) => {
+  return apiClient.post('/serial/cellular', { enabled });
+};
+
+// 单次 Ping
+export const pingOnce = () => {
+  return apiClient.post<PingResult>('/serial/ping', {});
+};
+
 // 重启模块
 export const rebootMcu = () => {
   return apiClient.post('/serial/reboot');
 };
-

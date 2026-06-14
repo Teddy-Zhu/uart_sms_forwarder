@@ -1,14 +1,14 @@
 -- =================================================================================
 -- PROJECT: UART SMS Forwarder
 -- DEVICE:  Air780EHV
--- VERSION: 1.0.1
+-- VERSION: 1.0.5
 -- 协议说明：
 --   上行（MCU -> 模块）：CMD_START:{json}:CMD_END
 --   下行（模块 -> MCU）：SMS_START:{json}:SMS_END
 -- =================================================================================
 
 PROJECT = "uart_sms_forwarder"
-VERSION = "1.0.3"
+VERSION = "1.0.5"
 
 log.info("main", PROJECT, VERSION)
 
@@ -22,8 +22,12 @@ local max_buffer_size = 50
 local msg_buffer = {}
 local uart_recv_buffer = ""
 local call_ring_count = 0  -- 来电响铃计数
+local ping_task_running = false
+local ping_target = "8.8.8.8"
+local ping_network_timeout_ms = 60000
+local ping_timeout_ms = 5000
 
--- ========== 关键：禁用自动数据连接 ==========
+-- ========== 禁用 SIM/基站信息/网络恢复等自动辅助任务 ==========
 mobile.setAuto(0)
 
 -- 3. 看门狗
@@ -38,6 +42,194 @@ log.info("System", "UART 初始化成功")
 -- =================================================================================
 -- 工具函数区
 -- =================================================================================
+
+function is_luat_success(value)
+    return value == true or value == 1
+end
+
+function close_cellular_network()
+    mobile.flymode(0, true)
+    mobile.setAuto(0)
+end
+
+function open_cellular_network()
+    mobile.flymode(0, false)
+    mobile.setAuto(0)
+end
+
+function is_cellular_ip_ready()
+    if not socket or not socket.LWIP_GP or not socket.adapter then
+        return false
+    end
+
+    local ok, ready = pcall(socket.adapter, socket.LWIP_GP)
+    return ok == true and ready == true
+end
+
+function get_cellular_ip(adapter)
+    if adapter == nil or not socket or not socket.localIP then
+        return ""
+    end
+
+    local ok, local_ip = pcall(socket.localIP, adapter)
+    if ok and local_ip then
+        return local_ip
+    end
+
+    return ""
+end
+
+function wait_cellular_ip_ready(timeout_ms)
+    local adapter = socket.LWIP_GP
+
+    if socket.adapter then
+        local ok, ready = pcall(socket.adapter, adapter)
+        if ok and ready == true then
+            return true, get_cellular_ip(adapter), adapter
+        end
+    end
+
+    local ready, ip, event_adapter = sys.waitUntil("IP_READY", timeout_ms)
+    if ready == true and (event_adapter == nil or event_adapter == adapter) then
+        return true, ip or get_cellular_ip(adapter), event_adapter or adapter
+    end
+
+    if socket.adapter then
+        local ok, is_ready = pcall(socket.adapter, adapter)
+        if ok and is_ready == true then
+            return true, get_cellular_ip(adapter), adapter
+        end
+    end
+
+    return false, ip or "", event_adapter or adapter
+end
+
+function set_cellular_enabled(enabled)
+    if enabled then
+        open_cellular_network()
+    else
+        close_cellular_network()
+    end
+end
+
+function run_ping_once(request_id)
+    if ping_task_running then
+        send_to_uart({
+            type = "cmd_response",
+            action = "ping_once",
+            request_id = request_id,
+            host = ping_target,
+            success = false,
+            result = "busy",
+            timestamp = os.time()
+        })
+        return
+    end
+
+    ping_task_running = true
+
+    sys.taskInit(function()
+        local response = {
+            type = "cmd_response",
+            action = "ping_once",
+            request_id = request_id,
+            host = ping_target,
+            success = false,
+            result = "error",
+            timestamp = os.time()
+        }
+        local was_cellular_ready = is_cellular_ip_ready()
+
+        local ok, err = pcall(function()
+            if not socket or not socket.LWIP_GP or not icmp or not icmp.setup or not icmp.ping then
+                response.result = "unsupported"
+                response.msg = "socket or icmp module unavailable"
+                return
+            end
+
+            local adapter = socket.LWIP_GP
+            response.adapter = adapter
+
+            response.restore_cellular_enabled = was_cellular_ready
+            log.info("CMD", "ping_once start", ping_target)
+            open_cellular_network()
+
+            local ready, local_ip = wait_cellular_ip_ready(ping_network_timeout_ms)
+            response.local_ip = local_ip
+            if not ready then
+                response.result = "network_timeout"
+                response.msg = "cellular network not ready"
+                return
+            end
+
+            local setup_ok = icmp.setup(adapter)
+            if setup_ok ~= true then
+                response.result = "icmp_setup_failed"
+                response.msg = "icmp setup failed"
+                return
+            end
+
+            local ping_started = icmp.ping(adapter, ping_target)
+            if not is_luat_success(ping_started) then
+                response.result = "ping_start_failed"
+                response.msg = "icmp ping start failed"
+                return
+            end
+
+            local ping_ok = false
+            local ping_adapter, time_ms, dst, ttl
+            local deadline = mcu.ticks2() + math.floor((ping_timeout_ms + 999) / 1000)
+
+            while mcu.ticks2() <= deadline do
+                local remain_ms = (deadline - mcu.ticks2()) * 1000
+                if remain_ms <= 0 then
+                    remain_ms = 1
+                end
+
+                ping_ok, ping_adapter, time_ms, dst, ttl = sys.waitUntil("PING_RESULT", remain_ms)
+                if not ping_ok then
+                    break
+                end
+
+                if ping_adapter == adapter and dst == ping_target then
+                    break
+                end
+
+                ping_ok = false
+            end
+
+            if ping_ok ~= true then
+                response.result = "ping_timeout"
+                response.msg = "ping response timeout"
+                return
+            end
+
+            response.success = true
+            response.result = "ok"
+            response.time_ms = time_ms
+            response.dst = dst
+            response.ttl = ttl
+            response.ping_adapter = ping_adapter
+        end)
+
+        if not ok then
+            response.result = "error"
+            response.msg = tostring(err)
+        end
+
+        local restore_ok, restore_err = pcall(function()
+            set_cellular_enabled(was_cellular_ready)
+        end)
+        response.cellular_restored = restore_ok == true
+        response.cellular_enabled = was_cellular_ready
+        if not restore_ok then
+            response.restore_error = tostring(restore_err)
+        end
+
+        send_to_uart(response)
+        ping_task_running = false
+    end)
+end
 
 function get_mobile_info()
     local info = {}
@@ -68,6 +260,8 @@ function get_mobile_info()
     info.is_registered = (net_stat == 1 or net_stat == 5)
     info.is_roaming = net_stat == 5
     info.uptime = mcu.ticks2() -- 单位为秒
+    info.cellular_ready = is_cellular_ip_ready()
+    info.local_ip = get_cellular_ip(socket and socket.LWIP_GP or nil)
 
     -- https://docs.openluat.com/osapi/core/mobile/#mobileflymodeindex-enable
     -- 查询飞行模式状态
@@ -117,12 +311,13 @@ function process_uart_command(cmd_data)
             type = "status_response",
             timestamp = os.time(),
             mem_kb = math.floor(collectgarbage("count")),
-            cellular_enabled = cellular_enabled,
+            cellular_enabled = is_cellular_ip_ready(),
             version = VERSION,
             mobile = get_mobile_info()
         })
 
     elseif cmd_data.action == "set_flymode" and cmd_data.enabled ~= nil then
+        local request_id = cmd_data.request_id
         -- 规范化为布尔值：兼容 true/false、1/0、"true"/"false"
         -- Lua 中 0 也是真值，必须显式转换
         local flymode_enabled = (cmd_data.enabled == true or cmd_data.enabled == 1 or
@@ -134,14 +329,37 @@ function process_uart_command(cmd_data)
         mobile.flymode(0, flymode_enabled)
 
         if not flymode_enabled then
-            mobile.setAuto(0) -- 退出飞行模式后，确保不自动拨号
+            mobile.setAuto(0)
         end
 
         send_to_uart({
             type = "cmd_response",
             action = "set_flymode",
-            result = "ok"
+            request_id = request_id,
+            result = "ok",
+            enabled = flymode_enabled,
+            cellular_enabled = not flymode_enabled
         })
+
+    elseif cmd_data.action == "set_cellular" and cmd_data.enabled ~= nil then
+        local request_id = cmd_data.request_id
+        local cellular_enabled = (cmd_data.enabled == true or cmd_data.enabled == 1 or
+                                  cmd_data.enabled == "true" or cmd_data.enabled == "1")
+
+        set_cellular_enabled(cellular_enabled)
+
+        send_to_uart({
+            type = "cmd_response",
+            action = "set_cellular",
+            request_id = request_id,
+            result = "ok",
+            enabled = cellular_enabled,
+            flymode = not cellular_enabled
+        })
+
+    elseif cmd_data.action == "ping_once" then
+        local request_id = cmd_data.request_id or os.time()
+        run_ping_once(request_id)
 
     elseif cmd_data.action == "reset_stack" then
         log.info("CMD", "重启协议栈")

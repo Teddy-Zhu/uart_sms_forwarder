@@ -7,24 +7,27 @@ import (
 )
 
 type StatusData struct {
-	Flymode bool   `json:"flymode"` // 设备当前是否为飞行模式
-	Type    string `json:"type"`    // 消息类型
-	Version string `json:"version"` // Lua 脚本版本
-	Mobile  struct {
-		IsRegistered bool    `json:"is_registered"`
-		IsRoaming    bool    `json:"is_roaming"`
-		Iccid        string  `json:"iccid"`
-		SignalDesc   string  `json:"signal_desc"`
-		SignalLevel  int     `json:"signal_level"`
-		SimReady     bool    `json:"sim_ready"`
-		Rssi         int     `json:"rssi"`
-		Csq          int     `json:"csq"`      // CSQ 信号强度 (0-31)
-		Rsrp         int     `json:"rsrp"`     // 参考信号接收功率 (-44 到 -140)
-		Rsrq         float64 `json:"rsrq"`     // 参考信号发送功率 (-3 到 -19.5)
-		Imsi         string  `json:"imsi"`     // SIM 卡 IMSI
-		Number       string  `json:"number"`   // 手机号
-		Operator     string  `json:"operator"` // 运营商名称
-		Uptime       int64   `json:"uptime"`   // 模块开机时长，单位为秒
+	Flymode         bool   `json:"flymode"`          // 设备当前是否为飞行模式
+	CellularEnabled bool   `json:"cellular_enabled"` // 蜂窝数据链路是否就绪
+	Type            string `json:"type"`             // 消息类型
+	Version         string `json:"version"`          // Lua 脚本版本
+	Mobile          struct {
+		IsRegistered  bool    `json:"is_registered"`
+		IsRoaming     bool    `json:"is_roaming"`
+		Iccid         string  `json:"iccid"`
+		SignalDesc    string  `json:"signal_desc"`
+		SignalLevel   int     `json:"signal_level"`
+		SimReady      bool    `json:"sim_ready"`
+		Rssi          int     `json:"rssi"`
+		Csq           int     `json:"csq"`      // CSQ 信号强度 (0-31)
+		Rsrp          int     `json:"rsrp"`     // 参考信号接收功率 (-44 到 -140)
+		Rsrq          float64 `json:"rsrq"`     // 参考信号发送功率 (-3 到 -19.5)
+		Imsi          string  `json:"imsi"`     // SIM 卡 IMSI
+		Number        string  `json:"number"`   // 手机号
+		Operator      string  `json:"operator"` // 运营商名称
+		Uptime        int64   `json:"uptime"`   // 模块开机时长，单位为秒
+		CellularReady bool    `json:"cellular_ready"`
+		LocalIP       string  `json:"local_ip"`
 	} `json:"mobile"`
 	Timestamp int    `json:"timestamp"`
 	MemKb     int    `json:"mem_kb"`
@@ -80,6 +83,10 @@ func (s *SerialService) handlePhoneNumberResponse(msg *ParsedMessage) {
 func (s *SerialService) handleCommandResponse(msg *ParsedMessage) {
 	if action, ok := msg.Payload["action"].(string); ok {
 		s.logger.Info("命令响应", zap.String("action", action), zap.Any("result", msg.Payload["result"]))
+	}
+
+	if requestID, ok := msg.Payload["request_id"].(string); ok && requestID != "" {
+		s.notifyCommandResponse(requestID, msg.Payload)
 	}
 }
 

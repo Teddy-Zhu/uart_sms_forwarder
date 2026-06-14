@@ -171,11 +171,32 @@ func (h *ScheduledTaskHandler) validateTask(task *models.ScheduledTask) error {
 	if task.IntervalDays <= 0 {
 		return echo.NewHTTPError(http.StatusBadRequest, "执行间隔天数必须大于0")
 	}
-	if task.PhoneNumber == "" {
-		return echo.NewHTTPError(http.StatusBadRequest, "目标手机号不能为空")
+
+	if task.TaskType == "" {
+		task.TaskType = models.ScheduledTaskTypeSMS
 	}
-	if task.Content == "" {
-		return echo.NewHTTPError(http.StatusBadRequest, "短信内容不能为空")
+
+	switch task.TaskType {
+	case models.ScheduledTaskTypeSMS:
+		if task.PhoneNumber == "" {
+			return echo.NewHTTPError(http.StatusBadRequest, "目标手机号不能为空")
+		}
+		if task.Content == "" {
+			return echo.NewHTTPError(http.StatusBadRequest, "短信内容不能为空")
+		}
+	case models.ScheduledTaskTypeSerial:
+		switch task.SerialAction {
+		case models.ScheduledSerialActionSetFlymode, models.ScheduledSerialActionSetCellular:
+			if task.SerialEnabled == nil {
+				return echo.NewHTTPError(http.StatusBadRequest, "串口控制开关不能为空")
+			}
+		case models.ScheduledSerialActionPingOnce, models.ScheduledSerialActionRebootMcu:
+		default:
+			return echo.NewHTTPError(http.StatusBadRequest, "串口控制动作无效")
+		}
+	default:
+		return echo.NewHTTPError(http.StatusBadRequest, "任务类型无效")
 	}
+
 	return nil
 }

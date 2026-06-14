@@ -28,9 +28,12 @@ const (
 	CacheRefreshInterval = 10 * time.Second
 	// 缓存过期时间
 	CacheTTL = 5 * time.Minute
+	// 命令响应等待超时
+	CommandResponseTimeout = 90 * time.Second
 )
 
 type ScheduledTaskStatusUpdater func(ctx context.Context, msgID string, status models.LastRunStatus) error
+type commandResponseWaiter chan map[string]interface{}
 
 // SerialService 串口管理服务
 type SerialService struct {
@@ -47,8 +50,12 @@ type SerialService struct {
 	deviceCache cache.Cache[string, *StatusData]
 	// 连接状态管理
 	mu        sync.RWMutex
+	writeMu   sync.Mutex
 	portName  string // 当前使用的串口名称
 	connected bool   // 连接状态
+
+	responseMu      sync.Mutex
+	responseWaiters map[string]commandResponseWaiter
 
 	// 设备的飞行模式查询永远返回 false，无奈只能在应用层处理
 	flyMode atomic.Bool
@@ -69,6 +76,7 @@ func NewSerialService(
 		notifier:        notifier,
 		propertyService: propertyService,
 		deviceCache:     cache.New[string, *StatusData](CacheTTL),
+		responseWaiters: make(map[string]commandResponseWaiter),
 	}
 	service.initMessageHandlers()
 	return service
@@ -125,6 +133,56 @@ func (s *SerialService) getConnectionInfo() (portName string, connected bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.portName, s.connected
+}
+
+func (s *SerialService) registerCommandWaiter(requestID string) commandResponseWaiter {
+	waiter := make(commandResponseWaiter, 1)
+
+	s.responseMu.Lock()
+	s.responseWaiters[requestID] = waiter
+	s.responseMu.Unlock()
+
+	return waiter
+}
+
+func (s *SerialService) unregisterCommandWaiter(requestID string) {
+	s.responseMu.Lock()
+	delete(s.responseWaiters, requestID)
+	s.responseMu.Unlock()
+}
+
+func (s *SerialService) notifyCommandResponse(requestID string, payload map[string]interface{}) {
+	s.responseMu.Lock()
+	waiter := s.responseWaiters[requestID]
+	s.responseMu.Unlock()
+
+	if waiter == nil {
+		return
+	}
+
+	select {
+	case waiter <- payload:
+	default:
+	}
+}
+
+func (s *SerialService) sendCommandAndWait(cmd map[string]any, timeout time.Duration) (map[string]interface{}, error) {
+	requestID := uuid.NewString()
+	cmd["request_id"] = requestID
+
+	waiter := s.registerCommandWaiter(requestID)
+	defer s.unregisterCommandWaiter(requestID)
+
+	if err := s.sendJSONCommand(cmd); err != nil {
+		return nil, err
+	}
+
+	select {
+	case response := <-waiter:
+		return response, nil
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("等待设备响应超时")
+	}
 }
 
 // runOnce 执行一次连接尝试
@@ -416,6 +474,11 @@ func (s *SerialService) GetStatus() (*StatusData, error) {
 
 		// 更新飞行模式状态
 		status.Flymode = s.FlyMode()
+		if status.Mobile.CellularReady {
+			status.CellularEnabled = true
+		} else if status.Flymode {
+			status.CellularEnabled = false
+		}
 		return status, nil
 	}
 
@@ -435,16 +498,63 @@ func (s *SerialService) FlyMode() bool {
 // SetFlymode 设置飞行模式
 // enabled: true 表示启用飞行模式，false 表示禁用飞行模式
 func (s *SerialService) SetFlymode(enabled bool) error {
+	return s.setFlymode(enabled, false)
+}
+
+func (s *SerialService) SetFlymodeAndWait(enabled bool) error {
+	return s.setFlymode(enabled, true)
+}
+
+func (s *SerialService) setFlymode(enabled bool, wait bool) error {
 	cmd := map[string]any{
 		"action":  "set_flymode",
 		"enabled": enabled,
 	}
-	if err := s.sendJSONCommand(cmd); err != nil {
-		return err
+	if wait {
+		if _, err := s.sendCommandAndWait(cmd, CommandResponseTimeout); err != nil {
+			return err
+		}
+	} else {
+		if err := s.sendJSONCommand(cmd); err != nil {
+			return err
+		}
 	}
 	// 更新飞行模式状态
 	s.flyMode.Store(enabled)
 	return nil
+}
+
+// SetCellular 设置蜂窝数据链路状态。
+func (s *SerialService) SetCellular(enabled bool) error {
+	return s.setCellular(enabled, false)
+}
+
+func (s *SerialService) SetCellularAndWait(enabled bool) error {
+	return s.setCellular(enabled, true)
+}
+
+func (s *SerialService) setCellular(enabled bool, wait bool) error {
+	cmd := map[string]any{
+		"action":  "set_cellular",
+		"enabled": enabled,
+	}
+	if wait {
+		if _, err := s.sendCommandAndWait(cmd, CommandResponseTimeout); err != nil {
+			return err
+		}
+	} else {
+		if err := s.sendJSONCommand(cmd); err != nil {
+			return err
+		}
+	}
+	s.flyMode.Store(!enabled)
+	return nil
+}
+
+func (s *SerialService) PingOnce() (map[string]interface{}, error) {
+	return s.sendCommandAndWait(map[string]any{
+		"action": "ping_once",
+	}, CommandResponseTimeout)
 }
 
 // RebootMcu 重启模块
@@ -468,6 +578,9 @@ func (s *SerialService) sendJSONCommand(cmd any) error {
 	if err != nil {
 		return err
 	}
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 
 	_, err = s.port.Write(message)
 	if err != nil {

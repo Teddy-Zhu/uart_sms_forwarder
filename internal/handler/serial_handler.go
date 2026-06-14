@@ -75,6 +75,10 @@ type SetFlymodeRequest struct {
 	Enabled bool `json:"enabled"`
 }
 
+type SetCellularRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
 // SetFlymode 设置飞行模式
 // POST /api/serial/flymode
 // Body: {"enabled": true}
@@ -96,6 +100,44 @@ func (h *SerialHandler) SetFlymode(c echo.Context) error {
 	go h.serialService.RequestCacheUpdate()
 
 	return c.JSON(http.StatusOK, map[string]any{})
+}
+
+// SetCellular 设置蜂窝数据链路状态
+// POST /api/serial/cellular
+// Body: {"enabled": true}
+func (h *SerialHandler) SetCellular(c echo.Context) error {
+	var req SetCellularRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "请求参数错误",
+		})
+	}
+
+	err := h.serialService.SetCellular(req.Enabled)
+	if err != nil {
+		h.logger.Error("设置蜂窝网络失败", zap.Error(err))
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": err.Error(),
+		})
+	}
+	go h.serialService.RequestCacheUpdate()
+
+	return c.JSON(http.StatusOK, map[string]any{})
+}
+
+// PingOnce 执行一次蜂窝网络 Ping
+// POST /api/serial/ping
+func (h *SerialHandler) PingOnce(c echo.Context) error {
+	result, err := h.serialService.PingOnce()
+	if err != nil {
+		h.logger.Error("Ping 操作失败", zap.Error(err))
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": err.Error(),
+		})
+	}
+	go h.serialService.RequestCacheUpdate()
+
+	return c.JSON(http.StatusOK, result)
 }
 
 // RebootMcu 重启模块
