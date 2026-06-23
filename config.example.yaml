@@ -16,7 +16,7 @@ App:
   # JWT配置
   JWT:
     # 随机生成一个 32 字节的字符串，推荐使用 openssl rand -base64 32 生成
-    Secret: ""
+    Secret: "rDjGgapqqtjTg0zLJPq6XybkZspsSGOLUit+F8VVftM="
     ExpiresHours: 168 # 7天
   Users:
     # 使用 Bcrypt 加密，默认密码为 admin123，建议首次登录后修改密码，搜索 bcrypt在线加密网站 即可

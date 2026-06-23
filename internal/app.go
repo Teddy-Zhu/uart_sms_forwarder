@@ -144,11 +144,33 @@ func setDefaultConfig(appConfig *config.AppConfig, logger *zap.Logger) {
 
 // autoMigrate 数据库迁移
 func autoMigrate(db *gorm.DB) error {
+	if err := resetScheduledTasksTableIfLegacy(db); err != nil {
+		return err
+	}
 	return db.AutoMigrate(
 		&models.Property{},
 		&models.TextMessage{},
 		&models.ScheduledTask{},
 	)
+}
+
+func resetScheduledTasksTableIfLegacy(db *gorm.DB) error {
+	if !db.Migrator().HasTable(&models.ScheduledTask{}) {
+		return nil
+	}
+	legacyColumns := []string{"retry_cron_expr", "next_retry_run_at"}
+	for _, column := range legacyColumns {
+		if db.Migrator().HasColumn(&models.ScheduledTask{}, column) {
+			return db.Migrator().DropTable(&models.ScheduledTask{})
+		}
+	}
+	requiredColumns := []string{"schedule_type", "interval_days", "start_at", "retry_max_count", "retry_interval", "last_run_type", "retry_count", "next_retry_at"}
+	for _, column := range requiredColumns {
+		if !db.Migrator().HasColumn(&models.ScheduledTask{}, column) {
+			return db.Migrator().DropTable(&models.ScheduledTask{})
+		}
+	}
+	return nil
 }
 
 // setupApi 设置API路由

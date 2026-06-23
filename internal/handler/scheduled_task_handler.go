@@ -168,9 +168,45 @@ func (h *ScheduledTaskHandler) validateTask(task *models.ScheduledTask) error {
 	if task.Name == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, "任务名称不能为空")
 	}
-	if task.IntervalDays <= 0 {
-		return echo.NewHTTPError(http.StatusBadRequest, "执行间隔天数必须大于0")
+
+	if task.ScheduleType == "" {
+		task.ScheduleType = models.ScheduledScheduleTypeCron
 	}
+	switch task.ScheduleType {
+	case models.ScheduledScheduleTypeCron:
+		if task.CronExpr == "" {
+			return echo.NewHTTPError(http.StatusBadRequest, "Cron 表达式不能为空")
+		}
+		if err := service.ValidateCronExpr(task.CronExpr); err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, "Cron 表达式无效")
+		}
+		task.IntervalDays = 0
+		task.StartAt = 0
+	case models.ScheduledScheduleTypeIntervalDays:
+		if task.IntervalDays <= 0 {
+			return echo.NewHTTPError(http.StatusBadRequest, "间隔天数必须大于0")
+		}
+		if task.StartAt <= 0 {
+			return echo.NewHTTPError(http.StatusBadRequest, "起始时间不能为空")
+		}
+		task.CronExpr = ""
+	default:
+		return echo.NewHTTPError(http.StatusBadRequest, "计划类型无效")
+	}
+
+	if task.RetryEnabled {
+		if task.RetryMaxCount <= 0 {
+			return echo.NewHTTPError(http.StatusBadRequest, "失败重试次数必须大于0")
+		}
+		if task.RetryInterval <= 0 {
+			return echo.NewHTTPError(http.StatusBadRequest, "失败重试间隔必须大于0")
+		}
+	} else {
+		task.RetryMaxCount = 0
+		task.RetryInterval = 0
+	}
+	task.RetryCount = 0
+	task.NextRetryAt = 0
 
 	if task.TaskType == "" {
 		task.TaskType = models.ScheduledTaskTypeSMS

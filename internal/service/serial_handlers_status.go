@@ -8,7 +8,7 @@ import (
 
 type StatusData struct {
 	Flymode         bool   `json:"flymode"`          // 设备当前是否为飞行模式
-	CellularEnabled bool   `json:"cellular_enabled"` // 蜂窝数据链路是否就绪
+	CellularEnabled bool   `json:"cellular_enabled"` // 蜂窝数据是否开启
 	Type            string `json:"type"`             // 消息类型
 	Version         string `json:"version"`          // Lua 脚本版本
 	Mobile          struct {

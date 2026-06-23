@@ -56,7 +56,7 @@ export default function SerialControl() {
     });
 
     const mobile = deviceStatus?.mobile;
-    const cellularEnabled = Boolean(deviceStatus?.cellular_enabled || mobile?.cellular_ready);
+    const cellularEnabled = deviceStatus ? Boolean(deviceStatus.cellular_enabled) : false;
 
     const sendSMSMutation = useMutation({
         mutationFn: (data: { to: string; content: string }) => serialApi.sendSMS(data),
@@ -142,7 +142,7 @@ export default function SerialControl() {
                                     />
                                     <StatusRow
                                         label="蜂窝数据"
-                                        value={<span className="inline-flex items-center gap-2"><Dot active={cellularEnabled}/> {cellularEnabled ? '已就绪' : '未就绪'}</span>}
+                                        value={<span className="inline-flex items-center gap-2"><Dot active={cellularEnabled}/> {cellularEnabled ? '已打开' : '已关闭'}</span>}
                                     />
                                     <StatusRow
                                         label="网络注册"

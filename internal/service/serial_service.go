@@ -472,13 +472,6 @@ func (s *SerialService) GetStatus() (*StatusData, error) {
 		status.PortName = portName
 		status.Connected = connected
 
-		// 更新飞行模式状态
-		status.Flymode = s.FlyMode()
-		if status.Mobile.CellularReady {
-			status.CellularEnabled = true
-		} else if status.Flymode {
-			status.CellularEnabled = false
-		}
 		return status, nil
 	}
 
@@ -524,7 +517,7 @@ func (s *SerialService) setFlymode(enabled bool, wait bool) error {
 	return nil
 }
 
-// SetCellular 设置蜂窝数据链路状态。
+// SetCellular 设置蜂窝数据开关状态。
 func (s *SerialService) SetCellular(enabled bool) error {
 	return s.setCellular(enabled, false)
 }

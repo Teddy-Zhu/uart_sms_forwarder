@@ -82,7 +82,7 @@ export interface DeviceStatus {
     timestamp: number;           // 时间戳
     mem_kb: number;              // 内存使用 (KB)
     flymode: boolean;            // 飞行模式是否启用
-    cellular_enabled: boolean;   // 蜂窝数据链路是否就绪
+    cellular_enabled: boolean;   // 蜂窝数据是否开启
     mobile: MobileInfo;          // 移动网络信息
     port_name: string;           // 串口名称
     connected: boolean;          // 串口连接状态

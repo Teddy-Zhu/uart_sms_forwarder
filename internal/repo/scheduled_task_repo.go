@@ -34,6 +34,12 @@ func (r *ScheduledTaskRepo) FindAll(ctx context.Context) ([]models.ScheduledTask
 	return tasks, err
 }
 
+func (r *ScheduledTaskRepo) FindByLastMsgId(ctx context.Context, msgId string) (models.ScheduledTask, error) {
+	var task models.ScheduledTask
+	err := r.db.WithContext(ctx).Where("last_msg_id = ?", msgId).First(&task).Error
+	return task, err
+}
+
 func (r *ScheduledTaskRepo) UpdateLastRunStatusByMsgId(ctx context.Context, msgId string, status models.LastRunStatus) error {
 	return r.db.WithContext(ctx).Model(&models.ScheduledTask{}).
 		Where("last_msg_id = ?", msgId).

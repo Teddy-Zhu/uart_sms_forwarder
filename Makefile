@@ -1,9 +1,13 @@
-.PHONY: build-web build-server build-servers build-linux build-release clean dev run
+.PHONY: build-web build-server build-servers build-linux build-release docker-image clean dev run
 
 # 变量定义
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS := -s -w -X github.com/dushixiang/uart_sms_forwarder/internal/version.Version=$(VERSION)
 GOFLAGS := CGO_ENABLED=0
+IMAGE_NAME ?= dushixiang/uart_sms_forwarder
+IMAGE_TAG ?= latest
+DOCKER_PLATFORM ?= linux/amd64
+DOCKER_TARGETARCH := $(word 2,$(subst /, ,$(DOCKER_PLATFORM)))
 
 # 构建前端
 build-web:
@@ -15,6 +19,7 @@ build-web:
 build-server:
 	@echo "Building server for Linux amd64..."
 	@mkdir -p bin
+	@rm -f bin/uart_sms_forwarder-linux-amd64
 	$(GOFLAGS) GOOS=linux GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o bin/uart_sms_forwarder-linux-amd64 cmd/serv/main.go
 	upx bin/uart_sms_forwarder-linux-amd64
 	@echo "Server built successfully!"
@@ -24,6 +29,14 @@ build-server:
 build-servers:
 	@echo "Building servers for multiple platforms..."
 	@mkdir -p bin
+	@rm -f bin/uart_sms_forwarder-linux-amd64 \
+		bin/uart_sms_forwarder-linux-arm64 \
+		bin/uart_sms_forwarder-linux-arm \
+		bin/uart_sms_forwarder-windows-amd64.exe \
+		bin/uart_sms_forwarder-windows-arm64.exe \
+		bin/uart_sms_forwarder-darwin-amd64 \
+		bin/uart_sms_forwarder-darwin-arm64 \
+		bin/uart_sms_forwarder-freebsd-amd64
 
 	# Linux
 	@echo "Building for Linux amd64..."
@@ -66,11 +79,13 @@ build-linux:
 
 	# Linux amd64
 	@echo "Building for Linux amd64..."
+	@rm -f bin/uart_sms_forwarder-linux-amd64
 	$(GOFLAGS) GOOS=linux GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o bin/uart_sms_forwarder-linux-amd64 cmd/serv/main.go
 	upx bin/uart_sms_forwarder-linux-amd64
 
 	# Linux arm64
 	@echo "Building for Linux arm64..."
+	@rm -f bin/uart_sms_forwarder-linux-arm64
 	$(GOFLAGS) GOOS=linux GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o bin/uart_sms_forwarder-linux-arm64 cmd/serv/main.go
 	upx bin/uart_sms_forwarder-linux-arm64
 
@@ -83,6 +98,16 @@ build-release:
 	make build-web
 	make build-server
 	@echo "Release build completed!"
+
+# 构建 Docker 镜像
+docker-image: build-linux
+	@echo "Building Docker image $(IMAGE_NAME):$(IMAGE_TAG) for $(DOCKER_PLATFORM)..."
+	docker build \
+		--platform=$(DOCKER_PLATFORM) \
+		--build-arg TARGETARCH=$(DOCKER_TARGETARCH) \
+		-t $(IMAGE_NAME):$(IMAGE_TAG) \
+		.
+	@echo "Docker image built successfully: $(IMAGE_NAME):$(IMAGE_TAG)"
 
 # 清理构建文件
 clean:

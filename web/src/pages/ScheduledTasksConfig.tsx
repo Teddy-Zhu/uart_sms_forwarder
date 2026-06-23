@@ -1,6 +1,5 @@
 import {useState} from 'react';
 import {
-    Calendar,
     CheckCircle2,
     Clock,
     Edit,
@@ -38,7 +37,9 @@ import {
     deleteScheduledTask,
     getScheduledTasks,
     type LastRunStatus,
+    type ScheduledScheduleType,
     type ScheduledSerialAction,
+    type ScheduledTaskPayload,
     type ScheduledTask,
     type ScheduledTaskType,
     triggerScheduledTask,
@@ -48,7 +49,13 @@ import {
 interface TaskFormData {
     name: string;
     enabled: boolean;
+    scheduleType: ScheduledScheduleType;
+    cronExpr: string;
     intervalDays: number;
+    startAt: string;
+    retryEnabled: boolean;
+    retryMaxCount: number;
+    retryInterval: number;
     taskType: ScheduledTaskType;
     phoneNumber: string;
     content: string;
@@ -63,11 +70,33 @@ const serialActionText: Record<ScheduledSerialAction, string> = {
     reboot_mcu: '重启模块',
 };
 
+const cronPresets = [
+    {label: '每天 08:00', value: '0 8 * * *'},
+    {label: '每周一 08:00', value: '0 8 * * 1'},
+    {label: '每月 1 日 08:00', value: '0 8 1 * *'},
+    {label: '每 6 小时', value: '0 */6 * * *'},
+];
+
+function defaultStartAt() {
+    const date = new Date();
+    date.setHours(8, 0, 0, 0);
+    if (date.getTime() <= Date.now()) {
+        date.setDate(date.getDate() + 1);
+    }
+    return toDateTimeLocalValue(date.getTime());
+}
+
 function defaultForm(): TaskFormData {
     return {
         name: '',
         enabled: false,
-        intervalDays: 90,
+        scheduleType: 'cron',
+        cronExpr: '0 8 * * *',
+        intervalDays: 1,
+        startAt: defaultStartAt(),
+        retryEnabled: false,
+        retryMaxCount: 3,
+        retryInterval: 60,
         taskType: 'sms',
         phoneNumber: '',
         content: '',
@@ -83,6 +112,49 @@ function normalizeTaskType(task: ScheduledTask): ScheduledTaskType {
 function getSerialValueLabel(task: ScheduledTask) {
     if (task.serialAction === 'ping_once' || task.serialAction === 'reboot_mcu') return '';
     return task.serialEnabled ? '开启' : '关闭';
+}
+
+function formatDateTime(timestamp?: number) {
+    if (!timestamp || timestamp <= 0) return '-';
+    return new Date(timestamp).toLocaleString('zh-CN', {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+    });
+}
+
+function toDateTimeLocalValue(timestamp?: number) {
+    if (!timestamp || timestamp <= 0) return '';
+    const date = new Date(timestamp);
+    const offset = date.getTimezoneOffset() * 60000;
+    return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
+
+function fromDateTimeLocalValue(value: string) {
+    if (!value) return 0;
+    const timestamp = new Date(value).getTime();
+    return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function nextRunTypeText(type?: string) {
+    return type === 'retry' ? '失败重试' : '主计划';
+}
+
+function scheduleTypeText(type?: ScheduledScheduleType) {
+    return type === 'interval_days' ? '每隔天数' : 'Cron';
+}
+
+function formatSchedule(task: ScheduledTask) {
+    if (task.scheduleType === 'interval_days') {
+        return `每 ${task.intervalDays || 0} 天 · ${formatDateTime(task.startAt)}`;
+    }
+    return task.cronExpr;
+}
+
+function isCronInputValid(value: string) {
+    const expr = value.trim();
+    return expr.startsWith('@') || expr.split(/\s+/).length === 5;
 }
 
 export default function ScheduledTasksConfig() {
@@ -120,7 +192,7 @@ export default function ScheduledTasksConfig() {
     });
 
     const updateMutation = useMutation({
-        mutationFn: ({id, task}: { id: string; task: TaskFormData }) => updateScheduledTask(id, task),
+        mutationFn: ({id, task}: { id: string; task: ScheduledTaskPayload }) => updateScheduledTask(id, task),
         onSuccess: () => {
             queryClient.invalidateQueries({queryKey: ['scheduledTasks']});
             setDialogOpen(false);
@@ -163,7 +235,13 @@ export default function ScheduledTasksConfig() {
         setFormData({
             name: task.name,
             enabled: task.enabled,
-            intervalDays: task.intervalDays,
+            scheduleType: task.scheduleType || 'cron',
+            cronExpr: task.cronExpr || '0 8 * * *',
+            intervalDays: task.intervalDays || 1,
+            startAt: toDateTimeLocalValue(task.startAt) || defaultStartAt(),
+            retryEnabled: task.retryEnabled || false,
+            retryMaxCount: task.retryMaxCount || 3,
+            retryInterval: task.retryInterval || 60,
             taskType,
             phoneNumber: task.phoneNumber || '',
             content: task.content || '',
@@ -179,6 +257,9 @@ export default function ScheduledTasksConfig() {
             if (field === 'serialAction') {
                 next.serialEnabled = value === 'ping_once' || value === 'reboot_mcu' ? null : (current.serialEnabled ?? true);
             }
+            if (field === 'scheduleType' && value === 'interval_days' && !current.startAt) {
+                next.startAt = defaultStartAt();
+            }
             return next;
         });
     };
@@ -188,8 +269,31 @@ export default function ScheduledTasksConfig() {
             toast.warning('请输入任务名称');
             return;
         }
-        if (!formData.intervalDays || formData.intervalDays <= 0) {
-            toast.warning('请输入有效的执行间隔天数');
+        if (formData.scheduleType === 'cron') {
+            if (!formData.cronExpr.trim()) {
+                toast.warning('请输入 Cron 表达式');
+                return;
+            }
+            if (!isCronInputValid(formData.cronExpr)) {
+                toast.warning('Cron 表达式格式无效');
+                return;
+            }
+        } else {
+            if (formData.intervalDays <= 0) {
+                toast.warning('请输入有效的间隔天数');
+                return;
+            }
+            if (fromDateTimeLocalValue(formData.startAt) <= 0) {
+                toast.warning('请选择起始时间');
+                return;
+            }
+        }
+        if (formData.retryEnabled && formData.retryMaxCount <= 0) {
+            toast.warning('请输入有效的失败重试次数');
+            return;
+        }
+        if (formData.retryEnabled && formData.retryInterval <= 0) {
+            toast.warning('请输入有效的失败重试间隔');
             return;
         }
         if (formData.taskType === 'sms') {
@@ -207,8 +311,13 @@ export default function ScheduledTasksConfig() {
             return;
         }
 
-        const payload: TaskFormData = {
+        const payload: ScheduledTaskPayload = {
             ...formData,
+            cronExpr: formData.scheduleType === 'cron' ? formData.cronExpr.trim() : '',
+            intervalDays: formData.scheduleType === 'interval_days' ? formData.intervalDays : 0,
+            startAt: formData.scheduleType === 'interval_days' ? fromDateTimeLocalValue(formData.startAt) : 0,
+            retryMaxCount: formData.retryEnabled ? formData.retryMaxCount : 0,
+            retryInterval: formData.retryEnabled ? formData.retryInterval : 0,
             phoneNumber: formData.taskType === 'sms' ? formData.phoneNumber : '',
             content: formData.taskType === 'sms' ? formData.content : '',
             serialAction: formData.taskType === 'serial' ? formData.serialAction : 'set_cellular',
@@ -301,8 +410,28 @@ export default function ScheduledTasksConfig() {
                                         <div className="flex items-start space-x-2 rounded-lg border border-gray-100 bg-gray-50 p-2.5">
                                             <Clock size={14} className="mt-0.5 flex-shrink-0 text-gray-400"/>
                                             <div className="min-w-0 flex-1">
-                                                <span className="mb-0.5 block text-xs font-medium text-gray-400">执行间隔</span>
-                                                <span className="text-sm font-semibold text-gray-700">每 {task.intervalDays} 天</span>
+                                                <span className="mb-0.5 block text-xs font-medium text-gray-400">{scheduleTypeText(task.scheduleType)}</span>
+                                                <span className="break-words text-sm font-semibold text-gray-700">{formatSchedule(task)}</span>
+                                            </div>
+                                        </div>
+
+                                        <div className="flex items-start space-x-2 rounded-lg border border-gray-100 bg-gray-50 p-2.5">
+                                            <Clock size={14} className="mt-0.5 flex-shrink-0 text-gray-400"/>
+                                            <div className="min-w-0 flex-1">
+                                                <span className="mb-0.5 block text-xs font-medium text-gray-400">下次执行</span>
+                                                <span className="text-sm font-semibold text-gray-700">
+                                                    {task.enabled ? `${formatDateTime(task.nextRunAt)} · ${nextRunTypeText(task.nextRunType)}` : '-'}
+                                                </span>
+                                            </div>
+                                        </div>
+
+                                        <div className="flex items-start space-x-2 rounded-lg border border-gray-100 bg-gray-50 p-2.5">
+                                            <RotateCcw size={14} className="mt-0.5 flex-shrink-0 text-gray-400"/>
+                                            <div className="min-w-0 flex-1">
+                                                <span className="mb-0.5 block text-xs font-medium text-gray-400">失败重试</span>
+                                                <span className="text-sm font-semibold text-gray-700">
+                                                    {task.retryEnabled ? `${task.retryCount || 0}/${task.retryMaxCount} 次 · 间隔 ${task.retryInterval} 秒` : '关闭'}
+                                                </span>
                                             </div>
                                         </div>
 
@@ -341,12 +470,7 @@ export default function ScheduledTasksConfig() {
                                             <div className="flex items-center text-xs">
                                                 <span className="text-gray-400">上次执行：</span>
                                                 <span className="ml-1.5 font-medium text-gray-600">
-                                                    {new Date(task.lastRunAt).toLocaleString('zh-CN', {
-                                                        month: 'short',
-                                                        day: 'numeric',
-                                                        hour: '2-digit',
-                                                        minute: '2-digit',
-                                                    })}
+                                                    {formatDateTime(task.lastRunAt)}
                                                 </span>
                                             </div>
                                             {task.lastRunStatus ? (
@@ -439,25 +563,22 @@ export default function ScheduledTasksConfig() {
                             <div className={`h-2 w-2 rounded-full ${formData.enabled ? 'bg-green-500' : 'bg-gray-300'}`}/>
                         </div>
 
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                             <div>
                                 <label className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-600">
                                     <Clock size={12} className="text-gray-400"/>
-                                    执行间隔 <span className="text-red-500">*</span>
+                                    计划类型
                                 </label>
-                                <div className="relative">
-                                    <Input
-                                        type="number"
-                                        min="1"
-                                        value={formData.intervalDays}
-                                        onChange={(e) => updateFormField('intervalDays', parseInt(e.target.value) || 0)}
-                                        placeholder="90"
-                                        className="border-gray-200 bg-gray-50 pr-12 transition-all focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
-                                    />
-                                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-gray-400">天</span>
-                                </div>
+                                <Select value={formData.scheduleType} onValueChange={(value) => updateFormField('scheduleType', value as ScheduledScheduleType)}>
+                                    <SelectTrigger className="w-full border-gray-200 bg-gray-50">
+                                        <SelectValue/>
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="cron">Cron</SelectItem>
+                                        <SelectItem value="interval_days">每隔天数</SelectItem>
+                                    </SelectContent>
+                                </Select>
                             </div>
-
                             <div>
                                 <label className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-600">
                                     <Settings2 size={12} className="text-gray-400"/>
@@ -473,6 +594,111 @@ export default function ScheduledTasksConfig() {
                                     </SelectContent>
                                 </Select>
                             </div>
+                        </div>
+
+                        {formData.scheduleType === 'cron' ? (
+                            <>
+                                <div>
+                                    <label className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-600">
+                                        <Clock size={12} className="text-gray-400"/>
+                                        Cron <span className="text-red-500">*</span>
+                                    </label>
+                                    <Input
+                                        value={formData.cronExpr}
+                                        onChange={(e) => updateFormField('cronExpr', e.target.value)}
+                                        placeholder="0 8 * * *"
+                                        className="border-gray-200 bg-gray-50 font-mono transition-all focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+                                    />
+                                </div>
+
+                                <div className="flex flex-wrap gap-2">
+                                    {cronPresets.map((preset) => (
+                                        <Button
+                                            key={preset.value}
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={() => updateFormField('cronExpr', preset.value)}
+                                            className="h-8 text-xs"
+                                        >
+                                            {preset.label}
+                                        </Button>
+                                    ))}
+                                </div>
+                            </>
+                        ) : (
+                            <div className="grid grid-cols-1 gap-4 sm:grid-cols-[140px_minmax(0,1fr)]">
+                                <div>
+                                    <label className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-600">
+                                        <Clock size={12} className="text-gray-400"/>
+                                        间隔天数 <span className="text-red-500">*</span>
+                                    </label>
+                                    <Input
+                                        type="number"
+                                        min="1"
+                                        value={formData.intervalDays}
+                                        onChange={(e) => updateFormField('intervalDays', parseInt(e.target.value) || 0)}
+                                        className="border-gray-200 bg-gray-50 transition-all focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-600">
+                                        <Clock size={12} className="text-gray-400"/>
+                                        起始时间 <span className="text-red-500">*</span>
+                                    </label>
+                                    <Input
+                                        type="datetime-local"
+                                        value={formData.startAt}
+                                        onChange={(e) => updateFormField('startAt', e.target.value)}
+                                        className="border-gray-200 bg-gray-50 transition-all focus:border-blue-500 focus:bg-white focus:ring-1 focus:ring-blue-500"
+                                    />
+                                </div>
+                            </div>
+                        )}
+
+                        <div className="space-y-3 rounded-lg border border-gray-200 bg-gray-50 p-3.5">
+                            <div className="flex items-center gap-3">
+                                <input
+                                    type="checkbox"
+                                    id="retryEnabled"
+                                    checked={formData.retryEnabled}
+                                    onChange={(e) => updateFormField('retryEnabled', e.target.checked)}
+                                    className="h-4 w-4 cursor-pointer rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                />
+                                <label htmlFor="retryEnabled" className="flex-1 cursor-pointer text-sm font-medium text-gray-700">
+                                    失败后自动重试
+                                </label>
+                                <div className={`h-2 w-2 rounded-full ${formData.retryEnabled ? 'bg-green-500' : 'bg-gray-300'}`}/>
+                            </div>
+
+                            {formData.retryEnabled ? (
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">
+                                            最多次数
+                                        </label>
+                                        <Input
+                                            type="number"
+                                            min="1"
+                                            value={formData.retryMaxCount}
+                                            onChange={(e) => updateFormField('retryMaxCount', parseInt(e.target.value) || 0)}
+                                            className="border-gray-200 bg-white transition-all focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-600">
+                                            间隔秒数
+                                        </label>
+                                        <Input
+                                            type="number"
+                                            min="1"
+                                            value={formData.retryInterval}
+                                            onChange={(e) => updateFormField('retryInterval', parseInt(e.target.value) || 0)}
+                                            className="border-gray-200 bg-white transition-all focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                                        />
+                                    </div>
+                                </div>
+                            ) : null}
                         </div>
 
                         {formData.taskType === 'sms' ? (

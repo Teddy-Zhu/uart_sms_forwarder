@@ -311,7 +311,7 @@ function process_uart_command(cmd_data)
             type = "status_response",
             timestamp = os.time(),
             mem_kb = math.floor(collectgarbage("count")),
-            cellular_enabled = is_cellular_ip_ready(),
+            cellular_enabled = not mobile.flymode(),
             version = VERSION,
             mobile = get_mobile_info()
         })
